@@ -9,7 +9,7 @@
 #include "edge.hpp"
 #include "scenarios.hpp"
 #include "twostage.hpp"
-
+using namespace std;
 std::vector<std::vector<double>> calcW (std::vector<std::vector<int>> X_s, std::vector<double> meanX, std::vector<std::vector<double>> W, double rho){
     std::vector<std::vector<double>> Wnew;
     for (int p =0; p < X_s.size(); ++p){ 
@@ -40,8 +40,9 @@ int main(int argc, char* argv[]){
     op::OptionParser opt;
     opt.add_option("h", "help", "shows option help" ); 
     opt.add_option("p", "instance_path", "instance_path", "../data/" );
-    opt.add_option("f", "file", "name of the instance file", "20-4-5-4.txt" ); 
+    opt.add_option("f", "file", "name of the instance file", "40-3-5-0.txt" ); 
     opt.add_option("s", "num_scenarios", "number of scenarios", "100");
+    opt.add_option("w", "prob_scenarios", "probability of visiting a target", "0.50");
 
     // parse the options and verify that all went well
     bool correct_parsing = opt.parse_options(argc, argv);
@@ -61,16 +62,22 @@ int main(int argc, char* argv[]){
     scenarios.setSeed(instance.getSeed());
     scenarios.setNumTargets(instance.getNumTargets());
     scenarios.setNumScenarios(std::stoi(opt["s"]));
+    scenarios.setProb(std::stod(opt["w"]));
     scenarios.generateScenarios();
     auto scen = scenarios.getScenariosPH();
 
     TwoStage formulation(instance,scenarios);
+    TwoStage detformulation(instance, scenarios);
     formulation.initialize();
+    detformulation.initialize();
     formulation.populateEdgesPH();
+    detformulation.populateEdgesPH();
 
-    //defining the PH opt variables to be used
+    //defining the PH optimization variables to be used
     std::vector<double> costs;
+    std::vector<double> detcosts;
     std::vector<std::vector<int>> soltn; //This gives the path nodes
+    std::vector<std::vector<int>> detsoltn;
     std::vector<std::vector<int>> X_s; //this is a vector of vector ∈ {0,1} of the first stage solution
     std::vector<double> meanX;
     std::vector<std::vector<double>> W;
@@ -84,21 +91,32 @@ int main(int argc, char* argv[]){
     std::ofstream outfile;
     std::string file = savepath +"O"+ instance.getName() ;
     std::cout <<file<<std::endl;
+    std::vector<int> det(scenarios.getNumTargets(),0); //get deterministic solution if there are no satellite locations to visit
+    detformulation.solvePHscenario(det);
     outfile.open(file);
+    outfile<<"DETERMINISTIC SOLUTION"<<std::endl;
+    auto detPath = detformulation.getPath();
+    for (int i =0; i < detPath.size(); ++i)
+        outfile <<detPath[i] <<"  ";
+    outfile<< detformulation.getPathCost()<< std::endl;
     outfile <<"PH ITERATION  "<<iteration <<std::endl;
-    //std::cout <<"mainLoop 0 start"<<std::endl;
+    
     for ( int i =0; i< scen.size(); ++i){
         outfile <<"Scenario  "<<i+1 <<std::endl;
         formulation.solvePHscenario(scen[i]);
         X_s.push_back(formulation.getfirstStageScenarioSolution());
         soltn.push_back(formulation.getPath());
         costs.push_back(formulation.getPathCost());
+        detformulation.calcDetCostPath(scen[i], detPath);
+        std::cout <<"MAIN:::aftersolve1PHscenario and CalDetPath for 1 scenario"<<std::endl;
+        auto detC = detformulation.getPathCost();
+        detcosts.push_back(detC);
         for (int j=0; j< scen[i].size(); ++j)
             outfile << scen[i][j] << " " ;
         outfile << std::endl;
         for ( int j =0; j< soltn[i].size();++j)
             outfile << soltn[i][j] <<" ";
-        outfile << costs[i] <<std::endl;
+        outfile << costs[i] <<"  " << detC<<std::endl;
     
     }
     std::cout<<"SIZE OF X_S   "<<X_s.size()<<std::endl;

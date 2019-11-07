@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <limits>
 #include <string>
+#include <algorithm>
 #include "util.hpp"
 
 
@@ -27,7 +28,6 @@ class TwoStage {
         int _source;
         int _destination;
         std::vector<Edge> _firstStageEdges;
-        std::vector<bool> _hasRecourseEdge;
         std::vector<Edge> _recourseEdges;
         std::vector<std::vector<int>> _recoursePaths;
         std::unordered_map<std::tuple<int, int>, int> _edgeMap;
@@ -35,19 +35,18 @@ class TwoStage {
         double _firstStageCost;
         double _secondStageCost;
         double _pathCost;
-        std::tuple<double, double> _ub;
-        std::tuple<double, double> _ubRange;
+        std::vector<std::tuple<int,int>> _detEdges;
         std::unordered_map<int, std::tuple<int,int>> _satEdgeMap;
         std::vector<int> _firstStageX;
     
     private: 
         void setSource()  { _source = _instance.getSource(); };
         void setDestination() { _destination = _instance.getDestination(); };
-        void populateConstraints();
         void populateConstraintsPH(std::vector<int> w);
         void computePath(std::vector<std::tuple<int, int>> &);
-        void computeUB(std::vector<int> & );
-        void writeSolution(int batchId, int numScenarios);
+        void populateConstraintsDet(std::tuple<int,int>&);
+        double detCostCompute(std::vector<Edge>&v, std::tuple<int, int> &t);
+        void solvePHscenarioDet(std::tuple<int,int> t);
 
     public: 
         TwoStage(const Instance & instance, const Scenarios & scenarios);
@@ -69,18 +68,13 @@ class TwoStage {
         double getFirstStageCost() const { return _firstStageCost; };
         double getSecondStageCost() const { return _secondStageCost; };
         double getPathCost() const { return _pathCost; };
-        std::tuple<double, double> getUB() { return _ub; };
-        std::tuple<double, double> getUBRange() { return _ubRange; };
         void setModel(Model & model) { _model = model; };
         std::vector<int> getfirstStageScenarioSolution() {return _firstStageX;};
 
 
         void initialize();
-        
-        void populateEdges(); 
+        void calcDetCostPath(std::vector<int> &,std::vector<int> &);
         void populateEdgesPH();
-        void solve(int batchId, int numScenariosPerBatch);
-        void solveDeterministic();
         void solvePHscenario(std::vector<int> omega);
         void solvePHscenario(std::vector<int> omega, std::vector<double> w, std::vector<double> Xbar, double Rho);
         

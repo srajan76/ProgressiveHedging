@@ -13,7 +13,75 @@
 #include <set>
 #include "util.hpp"
 
-typedef const std::unordered_map<std::tuple<int, int>, int> & edgeMapType;
+typedef const std::vector<std::tuple<int, int>> & detEdgeType;
+std::vector<IloRange> generateLazyConstraintsDet(
+    Model & model,
+    detEdgeType & detEdges,
+    const std::vector<int> & satTargetsIn,
+    const std::vector<int> & satTargetsOut,
+    const int targets,
+    const int numsatellites,
+    std::unordered_map<std::string, IloNumArray>& variableValues){
+
+    std::vector<IloRange> constraints;
+    lemon::ListDigraph supportGraph;
+    for (int i=0; i<=numsatellites+1; ++i) 
+        supportGraph.addNode();
+        
+    IloNumArray xVals = variableValues.at("f");
+    for (auto i=0; i<xVals.getSize(); ++i)
+        if (xVals[i] > 1E-5) {
+            int from = std::get<0>(detEdges[i]);
+            int to = std::get<1>(detEdges[i]);
+            if (from < targets)
+                supportGraph.addArc(supportGraph.nodeFromId(0), supportGraph.nodeFromId((to- targets)%numsatellites +1));
+            else if(from >= targets && to>= targets)
+                supportGraph.addArc(supportGraph.nodeFromId((from- targets)%numsatellites +1), supportGraph.nodeFromId((to- targets)%numsatellites +1));
+            else
+                supportGraph.addArc(supportGraph.nodeFromId((from- targets)%numsatellites +1), supportGraph.nodeFromId(numsatellites+1));           
+        }
+    lemon::ListDigraph::NodeMap<int> componentMap(supportGraph);
+    int numComponents = stronglyConnectedComponents(supportGraph, componentMap);
+    
+    std::vector<std::set<int>> components(numComponents);
+	for (lemon::ListDigraph::NodeIt n(supportGraph); n!=lemon::INVALID; ++n)
+		components[componentMap[n]].insert(supportGraph.id(n));
+    
+    for (auto const & component : components) {
+        if (component.size() <= 1) continue;
+        std::set<int> vertexIds;
+        for (auto const & vertexId : component) 
+            vertexIds.insert(vertexId);
+        std::vector<int> constraintindices;
+        for (auto const & from : vertexIds){
+            for(auto const & to : vertexIds){
+                if (from ==to) continue;
+                for( int m =0; m <detEdges.size(); ++m){
+                    auto out= std::get<0>(detEdges[m]) ;
+                    auto in = std::get<1>(detEdges[m]) ;
+                    out = (out-targets)%numsatellites +1;
+                    in = (in-targets)%numsatellites +1;
+                    if ( out <=0)
+                        out =0;
+                    if ( in <=0)
+                        in= numsatellites+1;
+                    if ( from == out && to == in){
+                        constraintindices.push_back(m);
+                        break;
+                    }
+                }
+            }
+        }
+         IloExpr expr(model.getEnv());
+         for (auto const &m : constraintindices)
+            expr+= model.getVariables().at("f")[m];
+         IloRange constr(model.getEnv(), expr, vertexIds.size()-1);
+         constraints.push_back(constr);
+         expr.end();
+    }
+    
+    return constraints;
+};   
 std::vector<IloRange> generateLazyConstraintsPH(
     Model & model,  
     const std::vector<Edge> & firststageedges, 
@@ -80,68 +148,8 @@ std::vector<IloRange> generateLazyConstraintsPH(
 
     return constraints;
 };
-std::vector<IloRange> generateLazyConstraints(
-    Model & model,  
-    const std::vector<Edge> & edges, 
-    const std::unordered_map<std::tuple<int, int>, int> & edgeMap,
-    const int numVertices,
-    const int source, 
-    const int destination,
-    std::unordered_map<std::string, IloNumArray> & variableValues) {
 
-    std::vector<IloRange> constraints;
-    lemon::ListDigraph supportGraph;
-
-    for (int i=0; i<numVertices; ++i) 
-        supportGraph.addNode();
-
-    IloNumArray xVals = variableValues.at("x");
-
-    for (auto i=0; i<xVals.getSize(); ++i)
-        if (xVals[i] > 1E-5) {
-            int from = edges[i].from();
-            int to = edges[i].to();
-            supportGraph.addArc(supportGraph.nodeFromId(from), supportGraph.nodeFromId(to));
-        }
-
-    lemon::ListDigraph::NodeMap<int> componentMap(supportGraph);
-    int numComponents = stronglyConnectedComponents(supportGraph, componentMap);
-
-    std::vector<std::set<int>> components(numComponents);
-	for (lemon::ListDigraph::NodeIt n(supportGraph); n!=lemon::INVALID; ++n)
-		components[componentMap[n]].insert(supportGraph.id(n));
-
-    for (auto const & component : components) {
-        if (component.size() <= 1) continue;
-        std::set<int> vertexIds;
-        for (auto const & vertexId : component) 
-            vertexIds.insert(vertexId);
-        
-        const bool sourceIn = vertexIds.find(source) != vertexIds.end();
-        const bool destinationIn = vertexIds.find(destination) != vertexIds.end();
-        if (sourceIn || destinationIn) continue;
-        
-        std::vector<int> edgeIds;
-        for (auto const & from : vertexIds) {
-            for (auto const & to : vertexIds) {
-                if (from == to) continue;
-                auto itr = edgeMap.find(std::make_tuple(from, to));
-                if (itr != edgeMap.end()) 
-                    edgeIds.push_back(itr->second);
-            }
-        }
-
-        IloExpr expr(model.getEnv());
-        for (auto const & edgeId : edgeIds)
-            expr += model.getVariables().at("x")[edgeId];
-        IloRange constr(model.getEnv(), expr, vertexIds.size()-1);
-        constraints.push_back(constr);
-        expr.end();
-    }
-
-    return constraints;
-};
-ILOLAZYCONSTRAINTCALLBACK7(addLazyCallback1, 
+ILOLAZYCONSTRAINTCALLBACK7(addLazyCallback1,
     Model&, model, 
     std::vector<Edge>&, firststageedges, 
     std::vector<Edge>&, recourseedges,
@@ -173,34 +181,35 @@ ILOLAZYCONSTRAINTCALLBACK7(addLazyCallback1,
     variableValues.at("y").end();
     constraints.clear();
 };
-ILOLAZYCONSTRAINTCALLBACK6(addLazyCallback, 
+
+ILOLAZYCONSTRAINTCALLBACK6(addLazyCallback,
     Model&, model, 
-    std::vector<Edge>&, edges, 
-    edgeMapType, edgeMap,
-    int, numVertices,
-    int, source, 
-    int, destination) {
+    detEdgeType&, detEdges,
+    std::vector<int>&, satTargetsIn,
+    std::vector<int>&, satTargetsOut,
+    int, targets, 
+    int, numsatellites) {
     
     IloEnv env = getEnv();
     std::unordered_map<std::string, IloNumArray> variableValues;
-    variableValues.insert(std::make_pair("x", IloNumArray(env, model.getVariables().at("x").getSize())));
-    getValues(variableValues.at("x"), model.getVariables().at("x"));
-
-    std::vector<IloRange> constraints = generateLazyConstraints(
+    variableValues.insert(std::make_pair("f", IloNumArray(env, model.getVariables().at("f").getSize())));
+    getValues(variableValues.at("f"), model.getVariables().at("f"));
+    std::vector<IloRange> constraints = generateLazyConstraintsDet(
         model, 
-        edges, 
-        edgeMap,
-        numVertices, 
-        source, 
-        destination, 
+        detEdges,
+        satTargetsIn,
+        satTargetsOut,
+        targets,
+        numsatellites,
         variableValues);
-
+    
     for (IloRange constr : constraints)
         add(constr);
-
-    variableValues.at("x").end();
+        
+        
+    
+    variableValues.at("f").end();
     constraints.clear();
 };
-
 
 #endif

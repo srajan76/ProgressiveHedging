@@ -18,7 +18,6 @@ TwoStage::TwoStage(const Instance & instance,
     _destination(), 
     _firstStageEdges(), 
     _recourseEdges(),
-    _hasRecourseEdge(),
     _recoursePaths(), 
     _edgeMap(), 
     _satEdgeMap(),
@@ -26,17 +25,14 @@ TwoStage::TwoStage(const Instance & instance,
     _firstStageCost(), 
     _secondStageCost(), 
     _pathCost(), 
-    _ub(), 
-    _firstStageX(),
-    _ubRange() {};
+    _detEdges(),
+    _firstStageX() {};
 
 void TwoStage::initialize() { 
     setSource(); 
     setDestination();
     return;
 };
-
-
 
 void TwoStage::populateEdgesPH(){
     auto coords = getCoords();
@@ -238,7 +234,7 @@ void TwoStage::populateConstraintsPH(std::vector<int> w) {
     }
 
     setModel(model);
-    return;
+return;
 };
 
 void TwoStage::solvePHscenario(std::vector<int> omega){
@@ -361,243 +357,33 @@ void TwoStage::solvePHscenario(std::vector<int> omega, std::vector<double> w, st
 return;
 };
 
- 
-
-
-
-void TwoStage::solve(int batchId, 
-    int numScenariosPerBatch) {
-
-    auto scenarios = _scenarios.getScenarios(
-        batchId, numScenariosPerBatch
-    );
-    assert(scenarios.size() == numScenariosPerBatch);
-
-    populateConstraints();
-    IloNumArray cost(_model.getEnv());
-
-    for (int i=0; i<_firstStageEdges.size(); ++i) {
-        auto edge = _firstStageEdges[i];
-        auto recourseEdge = _recourseEdges[i];
-        int from = edge.from();
-        int to = edge.to();
-        double directCost = edge.cost();
-        double recourseCost = 0.0;
-        if (_hasRecourseEdge[i]) {
-            recourseCost = recourseEdge.cost() - directCost;
-            double multiplier = 0;
-            for (int j=0; j<scenarios.size(); ++j) {
-                multiplier += scenarios[j][from];
-            }
-            recourseCost *= (multiplier/scenarios.size());
+void TwoStage::calcDetCostPath(std::vector<int> &w,std::vector<int>& detPath){
+    auto tinit = std::make_tuple(detPath[0], detPath[1]);
+    double pathcost = detCostCompute(_firstStageEdges, tinit );
+    std::cout<<"init det path cost 0-1  "<< pathcost<<std::endl;
+    for( int i =1; i <detPath.size()-1; ++i){
+        std::tuple<int,int> t(detPath[i], detPath[i+1]);
+        if(w[std::get<0>(t)]==0)
+            pathcost += detCostCompute(_recourseEdges,t);
+        else{            
+            populateConstraintsDet(t);
+            solvePHscenarioDet(t);
+            pathcost +=getPathCost();
         }
-        double effectiveCost = directCost + recourseCost;
-        cost.add(effectiveCost);
-    }
-    
-    _model.getModel().add(
-        IloMinimize(_model.getEnv(), 
-        IloScalProd(cost, _model.getVariables().at("x"))
-    ));
-
-    IloCplex cplex(_model.getEnv());
-    cplex.extract(_model.getModel());
-    cplex.setOut(_model.getEnv().getNullStream());
-    cplex.use(addLazyCallback(_model.getEnv(), 
-        _model,
-        _firstStageEdges, 
-        _edgeMap, 
-        getNumVertices(), 
-        getSource(), 
-        getDestination()
-    ));
-    cplex.solve();
-
-
-    double firstStageCost = 0.0;
-    double secondStageCost = 0.0;
-    std::vector<std::tuple<int, int>> solutionEdges;
-    std::vector<int> solutionEdgeIds;
-    for (int i=0; i<_model.getVariables().at("x").getSize(); ++i) {
-        if (cplex.getValue(_model.getVariables().at("x")[i]) > 0.9) {
-            int from = _firstStageEdges[i].from();
-            int to = _firstStageEdges[i].to();
-            solutionEdges.push_back(std::make_pair(from, to));
-            solutionEdgeIds.push_back(i);
-            firstStageCost += _firstStageEdges[i].cost();
-            auto recourseEdge = _recourseEdges[i];
-            double recourseCost = 0.0;
-            if (_hasRecourseEdge[i]) {
-                recourseCost = recourseEdge.cost() -
-                    _firstStageEdges[i].cost();
-                double multiplier = 0;
-                for (int j=0; j<scenarios.size(); ++j) {
-                    multiplier += scenarios[j][from];
-                }
-                recourseCost *= (multiplier/scenarios.size());
-            }
-            secondStageCost += recourseCost;
-        }
-    }
-
-    computePath(solutionEdges);
-    computeUB(solutionEdgeIds);
-    _firstStageCost = firstStageCost;
-    _secondStageCost = secondStageCost;
-    _pathCost = firstStageCost + secondStageCost;
-    writeSolution(batchId, numScenariosPerBatch);
-    return;
+        std::cout<<"DeT PATHCOST FOR EVERY Step in scenario   "<< i<<"  "<<pathcost<<std::endl;
+    }//for ends
+    _pathCost = pathcost;
+    std::cout<<"DeT PATHCOST FOR FULL scenario   "<<_pathCost<<std::endl;
+return;
 };
-void TwoStage::populateEdges() {
-    auto coords = getCoords();
-    auto satelliteCoords = getInstance().getSatelliteCoords();
-    std::vector<Edge> edges;
-    std::vector<Edge> recourseEdges;
-    std::vector<bool> hasRecourseEdge;
-    std::unordered_map<std::tuple<int, int>, int> edgeMap;
-    std::vector<std::vector<int>> recoursePaths;
-
-    for (int i=0; i<getNumVertices(); ++i) {
-        for (int j=0; j<getNumVertices(); ++j) {
-            if (i == j) continue;
-            if (i == getSource() && j == getDestination()) continue;
-            if (j == getSource()) continue;
-            if (i == getDestination()) continue;
-            auto ith = coords.at(i);
-            auto jth = coords.at(j);
-            std::vector<double> qInitial = {std::get<0>(ith), std::get<1>(ith), std::get<2>(ith)};
-            std::vector<double> qFinal = {std::get<0>(jth), std::get<1>(jth), std::get<2>(jth)};
-            DubinsPath path = getDubinsShortestPath(qInitial, qFinal, getInstance().getTurnRadius());
-            double directCost = path.getLength();
-            auto satellites = getInstance().getSatellitesAtTarget(i);
-            double recourseCost;
-            if (satellites.size() == 0) {
-                hasRecourseEdge.push_back(false);
-                recourseEdges.push_back(Edge());
-                recoursePaths.push_back({});
-            }
-            else {
-                hasRecourseEdge.push_back(true);
-                auto kth = satelliteCoords.at(satellites[0]); 
-                std::vector<double> qIntermediate = {std::get<0>(kth), std::get<1>(kth), std::get<2>(kth)};
-                path = getDubinsShortestPath(qInitial, qIntermediate, getInstance().getTurnRadius());
-                recourseCost = path.getLength();
-                path = getDubinsShortestPath(qIntermediate, qFinal, getInstance().getTurnRadius());
-                recourseCost += path.getLength();
-                recourseEdges.push_back(Edge(i, j, recourseCost));
-                recoursePaths.push_back({i, satellites[0], j});
-            }
-            edges.push_back(Edge(i, j, directCost));
-            edgeMap.insert({std::make_tuple(i, j), edges.size()-1});
+double TwoStage::detCostCompute(std::vector<Edge>&v, std::tuple<int,int> &z){
+     double pathcost;
+     for (auto const & a :v)
+        if(a.from()== std::get<0>(z) && a.to()==std::get<1>(z)){
+            pathcost = a.cost(); 
+            break;
         }
-    }
-
-    _firstStageEdges = edges;
-    _hasRecourseEdge = hasRecourseEdge;
-    _recourseEdges = recourseEdges;
-    _recoursePaths = recoursePaths;
-    _edgeMap = edgeMap;
-    return;
-};
-void TwoStage::populateConstraints() {
-
-    Model model;
-    model.getModel().setName(getInstance().getName().c_str());
-
-    IloNumVarArray x(model.getEnv());
-    model.getVariables().insert({"x", x});
-
-    for (int i=0; i<_firstStageEdges.size(); ++i) {
-        auto edge = _firstStageEdges[i];
-        std::string varname = "x_" + std::to_string(edge.from()) +  "_" + std::to_string(edge.to());
-        IloNumVar var(model.getEnv(), 0, 1, ILOINT, varname.c_str());
-        model.getVariables().at("x").add(var);
-    }
-
-    for (int i=0; i<getNumVertices(); ++i) {
-        IloExpr inExpr(model.getEnv());
-        IloExpr outExpr(model.getEnv());
-        for (int j=0; j<getNumVertices(); ++j) {
-            if (i == j) continue; 
-            auto inItr = _edgeMap.find(std::make_tuple(j, i));
-            auto outItr = _edgeMap.find(std::make_tuple(i, j));
-            if (inItr != _edgeMap.end()) {
-                inExpr += model.getVariables().at("x")[inItr->second];
-            }
-            if (outItr != _edgeMap.end()) {
-                outExpr += model.getVariables().at("x")[outItr->second];
-            }
-        }
-        if (i != getDestination()) {
-            std::string constrName = "out_" + std::to_string(i);
-            IloRange constrOut(model.getEnv(), 1, outExpr, 1, constrName.c_str());
-            model.getConstraints().push_back(constrOut);
-        }
-        if (i != getSource()) {
-            std::string constrName = "in_" + std::to_string(i);
-            IloRange constrIn(model.getEnv(), 1, inExpr, 1, constrName.c_str());
-            model.getConstraints().push_back(constrIn);
-        }
-    }
-
-    for (IloRange constr : model.getConstraints())  {
-        model.getModel().add(constr);
-    }
-
-    setModel(model);
-    return;
-};
-
-
-void TwoStage::solveDeterministic() {
-    
-    populateConstraints();
-    IloNumArray cost(_model.getEnv());
-    for (int i=0; i<_firstStageEdges.size(); ++i) {
-        auto edge = _firstStageEdges[i];
-        cost.add(edge.cost());
-    }
-
-    _model.getModel().add(
-        IloMinimize(_model.getEnv(), 
-        IloScalProd(cost, _model.getVariables().at("x"))
-    ));
-
-    IloCplex cplex(_model.getEnv());
-    cplex.extract(_model.getModel());
-    cplex.exportModel("test.lp");
-    cplex.setOut(_model.getEnv().getNullStream());
-    cplex.use(addLazyCallback(_model.getEnv(), 
-        _model,
-        _firstStageEdges, 
-        _edgeMap, 
-        getNumVertices(), 
-        getSource(), 
-        getDestination()
-    ));
-    cplex.solve();
-    
-    double firstStageCost = 0.0;
-    std::vector<std::tuple<int, int>> solutionEdges;
-    std::vector<int> solutionEdgeIds;
-    for (int i=0; i<_model.getVariables().at("x").getSize(); ++i) {
-        if (cplex.getValue(_model.getVariables().at("x")[i]) > 0.9) {
-            int from = _firstStageEdges[i].from();
-            int to = _firstStageEdges[i].to();
-            
-            solutionEdges.push_back(std::make_pair(from, to));
-            solutionEdgeIds.push_back(i);
-            firstStageCost += _firstStageEdges[i].cost();
-        }
-    }
-
-    computePath(solutionEdges);
-    computeUB(solutionEdgeIds);
-    _firstStageCost = firstStageCost;
-    _secondStageCost = 0.0;
-    _pathCost = _firstStageCost + _secondStageCost;
-   
-    return;
+return pathcost;
 };
 void TwoStage::computePath(
     std::vector<std::tuple<int, int>> & edges) {
@@ -616,97 +402,100 @@ void TwoStage::computePath(
     return;
 };
 
-void TwoStage::computeUB(
-    std::vector<int> & edgeIds) {
+void TwoStage::populateConstraintsDet(std::tuple<int,int>& t){
+    Model model;
+    std::vector<std::tuple<int,int>> detEdges;
+    auto satAttargetI = getInstance().getSatellitesAtTarget(std::get<0>(t));
+    std::vector<int> satTargets={std::get<0>(t)};
+    for (auto const & k : satAttargetI)
+        satTargets.push_back(std::get<1>(_satEdgeMap[k]));
+    auto satTargetsOut= satTargets;
+    satTargets.push_back(std::get<1>(t));
+    satTargets.erase(std::remove(satTargets.begin(), satTargets.end(),std::get<0>(t)),satTargets.end());
+    auto satTargetsIn = satTargets;
+                
+    IloNumVarArray f(model.getEnv());
+    model.getVariables().insert({"f", f});
+    IloExprArray arcOut(model.getEnv(), satTargets.size());
+    IloExprArray arcIn(model.getEnv(), satTargets.size());
+    for ( int i =0; i < satTargets.size(); ++i){
+        arcOut[i] = IloExpr(model.getEnv());
+        arcIn[i] = IloExpr(model.getEnv());
+    }
+    int i =0;
+    for (auto const & a : satTargetsOut){
+        int j =0;
+        for (auto const & b : satTargetsIn){
+            if((a==std::get<0>(t) && b == std::get<1>(t)) || a==b) {j+=1;continue;}
+            IloNumVar var(model.getEnv(), 0, 1, ILOINT);
+            model.getVariables().at("f").add(var); 
+            detEdges.push_back(std::make_tuple(a,b));
+            arcOut[i]+=var;
+            arcIn[j]+= var;
+            j+=1;                         
+        }
+    i+=1;    
+    }
     
-    std::vector<double> batchUB;
-    for (int i=1; i<11; ++i) {
-        auto scenarios = _scenarios.getUBScenarios(i);
-        assert(scenarios.size() == 100);
-        double firstStageCost = 0.0;
-        double secondStageCost = 0.0;
+    
+    for (int i =0; i< satTargets.size(); ++i){
+        std::string arcout = "arcout_" +i;
+        IloRange arcouT(model.getEnv(), 1, arcOut[i], 1, arcout.c_str());
+        model.getConstraints().push_back(arcouT);
+        std::string arcin = "arcin_" +i;
+        IloRange arciN(model.getEnv(), 1,arcIn[i], 1,arcin.c_str());
+        model.getConstraints().push_back(arciN);
+    }
+    for (IloRange constr : model.getConstraints())  
+        model.getModel().add(constr);
+    
+    setModel(model);
+    _detEdges= detEdges;
+    return;
+};
 
-        for (auto id : edgeIds) {
-            int from = _firstStageEdges[id].from();
-            firstStageCost += _firstStageEdges[id].cost();
-            auto recourseEdge = _recourseEdges[id];
-            double recourseCost = 0.0;
-            if (_hasRecourseEdge[id]) {
-                recourseCost = recourseEdge.cost() - 
-                    _firstStageEdges[id].cost();
-                double multiplier = 0;
-                for (int j=0; j<scenarios.size(); ++j) 
-                    multiplier += scenarios[j][from];
-                recourseCost *= (multiplier/scenarios.size());
+void TwoStage::solvePHscenarioDet(std::tuple<int,int> t){
+    IloExpr obj(_model.getEnv());
+    IloNumArray cost(_model.getEnv());
+    auto target = std::get<0>(t);
+    auto nexttarget = std::get<1>(t);
+    auto satAttargetI = getInstance().getSatellitesAtTarget(target);
+    std::vector<int> satTargets={target};
+    for (auto const & k : satAttargetI)
+        satTargets.push_back(std::get<1>(_satEdgeMap[k]));
+        auto satTargetsOut= satTargets;
+        satTargets.push_back(nexttarget);
+        satTargets.erase(std::remove(satTargets.begin(), satTargets.end(),std::get<0>(t)),satTargets.end());
+        auto satTargetsIn = satTargets;
+        for (auto const & a : satTargetsOut){
+            for (auto const & b : satTargetsIn){
+                if((a==target && b == nexttarget) || a==b) continue;
+                for(auto itr = _recourseEdges.begin(); itr != _recourseEdges.end(); ++itr){
+                    if ((*itr).from() ==a && (*itr).to()== b){   
+                        cost.add((*itr).cost());
+                        break;
+                    }
+                }
             }
-            secondStageCost += recourseCost;
-        }  
-        batchUB.push_back(firstStageCost + secondStageCost);  
-    }
-
-    double sum = std::accumulate(batchUB.begin(), 
-        batchUB.end(), 0.0);
-    double mean = sum / batchUB.size();
-
-    std::vector<double> diff(batchUB.size());
-    std::transform(
-        batchUB.begin(), 
-        batchUB.end(), 
-        diff.begin(), 
-        [mean](double x) { return x - mean; });
-
-    double sqSum = std::inner_product(
-        diff.begin(), diff.end(), diff.begin(), 0.0);
-    double stddev = std::sqrt(sqSum / (batchUB.size()-1));
-
-    _ub = std::make_tuple(mean, stddev);
-    
-    std::ofstream outfile;//added
-    outfile.open("data.txt");//added
-    outfile<<mean<<" " <<stddev<<std::endl; //added
-    outfile.close();//added*/
-
-    double kappa = 2.2621; // alpha = 0.05, degrees of freedom = 9
-
-    double lower = mean - (kappa*stddev)/std::sqrt(batchUB.size());
-    double upper = mean + (kappa*stddev)/std::sqrt(batchUB.size());
-
-    _ubRange = std::make_tuple(lower, upper);
-   
+        }
+        
+        obj = IloScalProd( cost, _model.getVariables().at("f"));
+        _model.getModel().add(IloMinimize(_model.getEnv(), obj ));
+        IloCplex cplex(_model.getEnv());
+        cplex.extract(_model.getModel());
+        cplex.setOut(_model.getEnv().getNullStream());
+        cplex.use(addLazyCallback(_model.getEnv(), 
+        _model,
+        _detEdges,
+        satTargetsIn,
+        satTargetsOut, 
+        getNumVertices(),
+        getInstance().getNumSatellitesPerTarget()
+        ));
+        cplex.solve();
+        _pathCost =cplex.getObjValue();
+        //computePath(solutionEdges);
+        std::cout<<"DETPATHCOST   "<<_pathCost<<std::endl;
+        _model.clearEnv();
     return;
-}
-
-void TwoStage::writeSolution(int batchId, 
-    int numScenarios) {
-
-    std::string file = _instance.getName();
-    std::string path = "../output/";
-    std::string filename = path + "b" 
-        + std::to_string(batchId) + "-n" 
-        + std::to_string(numScenarios) + "-" 
-        + file;
-
-    std::ofstream outfile;
-    outfile.open(filename);
-
-    outfile << batchId << std::endl 
-        << numScenarios << std::endl 
-        << _pathCost << std::endl 
-        << _path.size();
-
-    for (int i=0; i<_path.size(); ++i) {
-        if (i%10 == 0) 
-            outfile << std::endl;
-        outfile << _path[i] << " ";
-    }
-    
-    outfile << std::endl;
-
-    outfile << std::get<0>(_ubRange) << " "
-        << std::get<1>(_ubRange);
-    outfile << std::endl;
-    outfile << std::get<0>(_ub) << " "
-        << std::get<1>(_ub);
-    outfile.close();
-    return;
-}
+};
