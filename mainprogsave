@@ -98,7 +98,7 @@ int main(int argc, char* argv[]){
     outfile<<"DETERMINISTIC SOLUTION"<<std::endl;
     auto detPath = detformulation.getPath();
     for (int i =0; i < detPath.size(); ++i)
-       outfile <<detPath[i] <<"  ";
+        outfile <<detPath[i] <<"  ";
     outfile<< detformulation.getPathCost()<< std::endl;
     outfile <<"PH ITERATION  "<<iteration <<std::endl;
     std::cout<<"DONE"<<std::endl;
@@ -108,19 +108,18 @@ int main(int argc, char* argv[]){
         X_s.push_back(formulation.getfirstStageScenarioSolution());
         soltn.push_back(formulation.getPath());
         costs.push_back(formulation.getPathCost());
-        detformulation.calcDetCostPath(scen[i], detPath);
+        //detformulation.calcDetCostPath(scen[i], detPath);
         //std::cout <<"MAIN:::aftersolve1PHscenario and CalDetPath for 1 scenario"<<std::endl;
-        auto detC = detformulation.getPathCost();
-        detcosts.push_back(detC);
+       // auto detC = detformulation.getPathCost();
+        //detcosts.push_back(detC);
         for (int j=0; j< scen[i].size(); ++j)
             outfile << scen[i][j] << " " ;
         outfile << std::endl;
         for ( int j =0; j< soltn[i].size();++j)
             outfile << soltn[i][j] <<" ";
-        outfile << costs[i] <<"  " << detC<<std::endl;
+        outfile << costs[i] <<"  " /*<< detC*/<<std::endl;
     
     }
-   // return 0;
    // std::cout<<"SIZE OF X_S   "<<X_s.size()<<std::endl;
     //std::cout<<"SIZE OF X_S[i]  "<<X_s[X_s.size()-1].size()<<std::endl;
    // std::cout<<"SIZE OF W   "<<W.size()<<std::endl;
@@ -233,6 +232,7 @@ int main(int argc, char* argv[]){
    outfile.close();
     return 0;
 }
+
 
 
 

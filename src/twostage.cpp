@@ -360,7 +360,7 @@ return;
 void TwoStage::calcDetCostPath(std::vector<int> &w,std::vector<int>& detPath){
     auto tinit = std::make_tuple(detPath[0], detPath[1]);
     double pathcost = detCostCompute(_firstStageEdges, tinit );
-    std::cout<<"init det path cost 0-1  "<< pathcost<<std::endl;
+    //std::cout<<"init det path cost 0-1  "<< pathcost<<std::endl;
     for( int i =1; i <detPath.size()-1; ++i){
         std::tuple<int,int> t(detPath[i], detPath[i+1]);
         if(w[std::get<0>(t)]==0)
@@ -370,10 +370,10 @@ void TwoStage::calcDetCostPath(std::vector<int> &w,std::vector<int>& detPath){
             solvePHscenarioDet(t);
             pathcost +=getPathCost();
         }
-        std::cout<<"DeT PATHCOST FOR EVERY Step in scenario   "<< i<<"  "<<pathcost<<std::endl;
+        //std::cout<<"DeT PATHCOST FOR EVERY Step in scenario   "<< i<<"  "<<pathcost<<std::endl;
     }//for ends
     _pathCost = pathcost;
-    std::cout<<"DeT PATHCOST FOR FULL scenario   "<<_pathCost<<std::endl;
+    //std::cout<<"DeT PATHCOST FOR FULL scenario   "<<_pathCost<<std::endl;
 return;
 };
 double TwoStage::detCostCompute(std::vector<Edge>&v, std::tuple<int,int> &z){
@@ -495,7 +495,7 @@ void TwoStage::solvePHscenarioDet(std::tuple<int,int> t){
         cplex.solve();
         _pathCost =cplex.getObjValue();
         //computePath(solutionEdges);
-        std::cout<<"DETPATHCOST   "<<_pathCost<<std::endl;
+        //std::cout<<"DETPATHCOST   "<<_pathCost<<std::endl;
         _model.clearEnv();
     return;
 };
